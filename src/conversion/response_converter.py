@@ -1,8 +1,47 @@
 import json
 import uuid
+import re
 from fastapi import HTTPException, Request
 from src.core.constants import Constants
 from src.models.claude import ClaudeMessagesRequest
+
+
+
+def parse_minimax_xml_from_content(content: str):
+    """Parse MiniMax XML tool calls from content string.
+    
+    Returns: (clean_content, tool_calls_list)
+    """
+    if not content or "<minimax:tool_call>" not in content:
+        return content, []
+    
+    tool_calls = []
+    invoke_pattern = re.compile(
+        r'<minimax:tool_call>\s*<invoke name="([^"]+)">(.*?)</invoke>\s*</minimax:tool_call>',
+        re.DOTALL
+    )
+    param_pattern = re.compile(
+        r'<parameter name="([^"]+)">(.*?)</parameter>',
+        re.DOTALL
+    )
+    
+    for match in invoke_pattern.finditer(content):
+        tool_name = match.group(1)
+        params_str = match.group(2)
+        params = {}
+        for param_match in param_pattern.finditer(params_str):
+            params[param_match.group(1)] = param_match.group(2).strip()
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(params, ensure_ascii=False)
+            }
+        })
+    
+    clean_content = invoke_pattern.sub("", content).strip()
+    return clean_content if clean_content else None, tool_calls
 
 
 def convert_openai_to_claude_response(
@@ -18,17 +57,20 @@ def convert_openai_to_claude_response(
     choice = choices[0]
     message = choice.get("message", {})
 
+    # Parse MiniMax XML tool calls from content
+    text_content = message.get("content") or ""
+    clean_content, xml_tool_calls = parse_minimax_xml_from_content(text_content)
+
     # Build Claude content blocks
     content_blocks = []
 
-    # Add text content
-    text_content = message.get("content")
-    if text_content is not None:
-        content_blocks.append({"type": Constants.CONTENT_TEXT, "text": text_content})
+    # Add text content if there is clean content
+    if clean_content:
+        content_blocks.append({"type": Constants.CONTENT_TEXT, "text": clean_content})
 
-    # Add tool calls
-    tool_calls = message.get("tool_calls", []) or []
-    for tool_call in tool_calls:
+    # Add tool calls from both XML parsing and standard tool_calls
+    all_tool_calls = xml_tool_calls + (message.get("tool_calls", []) or [])
+    for tool_call in all_tool_calls:
         if tool_call.get("type") == Constants.TOOL_FUNCTION:
             function_data = tool_call.get(Constants.TOOL_FUNCTION, {})
             try:
@@ -238,6 +280,7 @@ async def convert_openai_streaming_to_claude_with_cancellation(
     current_tool_calls = {}
     final_stop_reason = Constants.STOP_END_TURN
     usage_data = {"input_tokens": 0, "output_tokens": 0}
+    xml_buffer = ""
 
     try:
         async for line in openai_stream:
@@ -280,12 +323,54 @@ async def convert_openai_streaming_to_claude_with_cancellation(
                     delta = choice.get("delta", {})
                     finish_reason = choice.get("finish_reason")
 
-                    # Handle text delta
+                    # Handle text delta with MiniMax XML parsing
                     if delta and "content" in delta and delta["content"] is not None:
-                        yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': text_block_index, 'delta': {'type': Constants.DELTA_TEXT, 'text': delta['content']}}, ensure_ascii=False)}\n\n"
+                        content_text = delta["content"]
+                        
+                        # Check for MiniMax XML tool calls
+                        if "<minimax:tool_call>" in content_text:
+                            xml_buffer += content_text
+                            
+                            # Check if we have complete XML block
+                            if "</minimax:tool_call>" in xml_buffer:
+                                clean_text, parsed_tool_calls = parse_minimax_xml_from_content(xml_buffer)
+                                
+                                if clean_text:
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': text_block_index, 'delta': {'type': Constants.DELTA_TEXT, 'text': clean_text}}, ensure_ascii=False)}\n\n"
+                                
+                                for tool_call in parsed_tool_calls:
+                                    tool_block_counter += 1
+                                    claude_index = text_block_index + tool_block_counter
+                                    func_data = tool_call.get("function", {})
+                                    
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_START}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_START, 'index': claude_index, 'content_block': {'type': Constants.CONTENT_TOOL_USE, 'id': tool_call['id'], 'name': func_data['name'], 'input': {}}}, ensure_ascii=False)}\n\n"
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': claude_index, 'delta': {'type': Constants.DELTA_INPUT_JSON, 'partial_json': func_data['arguments']}}, ensure_ascii=False)}\n\n"
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_STOP}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_STOP, 'index': claude_index}, ensure_ascii=False)}\n\n"
+                                
+                                xml_buffer = ""
+                        elif xml_buffer:
+                            xml_buffer += content_text
+                            if "</minimax:tool_call>" in xml_buffer:
+                                clean_text, parsed_tool_calls = parse_minimax_xml_from_content(xml_buffer)
+                                
+                                if clean_text:
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': text_block_index, 'delta': {'type': Constants.DELTA_TEXT, 'text': clean_text}}, ensure_ascii=False)}\n\n"
+                                
+                                for tool_call in parsed_tool_calls:
+                                    tool_block_counter += 1
+                                    claude_index = text_block_index + tool_block_counter
+                                    func_data = tool_call.get("function", {})
+                                    
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_START}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_START, 'index': claude_index, 'content_block': {'type': Constants.CONTENT_TOOL_USE, 'id': tool_call['id'], 'name': func_data['name'], 'input': {}}}, ensure_ascii=False)}\n\n"
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': claude_index, 'delta': {'type': Constants.DELTA_INPUT_JSON, 'partial_json': func_data['arguments']}}, ensure_ascii=False)}\n\n"
+                                    yield f"event: {Constants.EVENT_CONTENT_BLOCK_STOP}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_STOP, 'index': claude_index}, ensure_ascii=False)}\n\n"
+                                
+                                xml_buffer = ""
+                        else:
+                            yield f"event: {Constants.EVENT_CONTENT_BLOCK_DELTA}\ndata: {json.dumps({'type': Constants.EVENT_CONTENT_BLOCK_DELTA, 'index': text_block_index, 'delta': {'type': Constants.DELTA_TEXT, 'text': content_text}}, ensure_ascii=False)}\n\n"
 
-                    # Handle tool call deltas with improved incremental processing
-                    if "tool_calls" in delta and delta["tool_calls"]:
+                    # Handle tool call deltas (skip if XML was parsed)
+                    if not xml_buffer and "tool_calls" in delta and delta["tool_calls"]:
                         for tc_delta in delta["tool_calls"]:
                             tc_index = tc_delta.get("index", 0)
                             
