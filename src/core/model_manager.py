@@ -5,16 +5,24 @@ class ModelManager:
         self.config = config
     
     def map_claude_model_to_openai(self, claude_model: str) -> str:
-        """Map Claude model names to OpenAI model names based on BIG/SMALL pattern"""
+        """Map Claude model names to OpenAI model names.
+
+        If FORCE_MODEL is set in .env, always use that model regardless of client request.
+        Otherwise, use the existing mapping logic based on model naming patterns.
+        """
+        # If FORCE_MODEL is configured, always use it
+        if self.config.force_model:
+            return self.config.force_model
+
         # If it's already an OpenAI model, return as-is
         if claude_model.startswith("gpt-") or claude_model.startswith("o1-"):
             return claude_model
 
         # If it's other supported models (ARK/Doubao/DeepSeek), return as-is
-        if (claude_model.startswith("ep-") or claude_model.startswith("doubao-") or 
+        if (claude_model.startswith("ep-") or claude_model.startswith("doubao-") or
             claude_model.startswith("deepseek-")):
             return claude_model
-        
+
         # Map based on model naming patterns
         model_lower = claude_model.lower()
         if 'haiku' in model_lower:

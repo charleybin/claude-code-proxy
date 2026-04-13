@@ -29,6 +29,11 @@ class Config:
         self.big_model = os.environ.get("BIG_MODEL", "gpt-4o")
         self.middle_model = os.environ.get("MIDDLE_MODEL", self.big_model)
         self.small_model = os.environ.get("SMALL_MODEL", "gpt-4o-mini")
+
+        # Fixed model mode - when enabled, always use the specified model regardless of client request
+        # Strip quotes if present in the environment variable
+        force_model = os.environ.get("FORCE_MODEL", "").strip()
+        self.force_model = force_model.strip('"').strip("'")  # Remove surrounding quotes
         
     def validate_api_key(self):
         """Basic API key validation"""

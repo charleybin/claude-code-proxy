@@ -1,12 +1,17 @@
 from fastapi import FastAPI
 from src.api.endpoints import router as api_router
+from src.api.openai_endpoints import router as openai_router
 import uvicorn
 import sys
 from src.core.config import config
 
 app = FastAPI(title="Claude-to-OpenAI API Proxy", version="1.0.0")
 
+# 注册 Claude 兼容路由
 app.include_router(api_router)
+
+# 注册 OpenAI 兼容路由
+app.include_router(openai_router)
 
 
 def main():

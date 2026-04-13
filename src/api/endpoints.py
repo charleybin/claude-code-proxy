@@ -169,6 +169,10 @@ async def health_check():
         "openai_api_configured": bool(config.openai_api_key),
         "api_key_valid": config.validate_api_key(),
         "client_api_key_validation": bool(config.anthropic_api_key),
+        "endpoints": {
+            "claude_compat": "/v1/messages",
+            "openai_compat": "/v1/chat/completions",
+        },
     }
 
 
@@ -226,8 +230,14 @@ async def root():
             "small_model": config.small_model,
         },
         "endpoints": {
-            "messages": "/v1/messages",
-            "count_tokens": "/v1/messages/count_tokens",
+            "claude_compat": {
+                "messages": "/v1/messages",
+                "count_tokens": "/v1/messages/count_tokens",
+            },
+            "openai_compat": {
+                "chat_completions": "/v1/chat/completions",
+                "models": "/v1/models",
+            },
             "health": "/health",
             "test_connection": "/test-connection",
         },
