@@ -1,11 +1,11 @@
-"""OpenAI 兼容的 API 端点 - 简化版本"""
+"""OpenAI 兼容的 API 端点"""
 from fastapi import APIRouter, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 import uuid
 import time
 import json
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from src.core.config import config
 from src.core.logging import logger
@@ -17,6 +17,7 @@ from src.models.openai import (
     ChatMessage,
     UsageInfo,
 )
+from src.conversion.response_converter import parse_minimax_xml_from_content
 
 router = APIRouter()
 
@@ -28,25 +29,13 @@ minimax_client = OpenAIClient(
 )
 
 
-def parse_xml(content: str) -> tuple:
-    """Parse MiniMax XML tool calls."""
-    if not content or "<minimax:tool_call>" not in content:
-        return content, []
-    tool_calls = []
-    pattern = re.compile(r'<minimax:tool_call>\s*<invoke name="([^"]+)">(.*?)</invoke>\s*</minimax:tool_call>', re.DOTALL)
-    for m in pattern.finditer(content):
-        tool_calls.append({"id": f"call_{uuid.uuid4().hex[:8]}", "type": "function", "function": {"name": m.group(1), "arguments": "{}"}})
-    clean = pattern.sub("", content).strip()
-    return clean if clean else None, tool_calls
-
-
 def parse_response(response: dict) -> dict:
-    """Parse MiniMax XML in response."""
+    """Parse MiniMax XML in response using parse_minimax_xml_from_content."""
     for choice in response.get("choices", []):
         msg = choice.get("message", {})
         content = msg.get("content", "") or ""
         if "<minimax:tool_call>" in content:
-            clean, tools = parse_xml(content)
+            clean, tools = parse_minimax_xml_from_content(content)
             msg["content"] = clean
             msg["tool_calls"] = tools
             if tools:
