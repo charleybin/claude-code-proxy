@@ -1,0 +1,1 @@
+docker run -d -p 8082:8082 --name claude-proxy claude-proxy:0.1

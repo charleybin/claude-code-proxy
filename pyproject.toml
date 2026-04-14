@@ -23,7 +23,7 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "fastapi[standard]>=0.115.11",
+    "fastapi>=0.115.11",
     "uvicorn>=0.34.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
